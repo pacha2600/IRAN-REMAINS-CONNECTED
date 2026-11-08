@@ -1,0 +1,466 @@
+Project: Iran Proxy Monitor
+Automated proxy discovery, throughput testing and Karing integration
+1. Objective
+Build a Windows 11 application that automatically monitors a frequently changing subscription containing approximately 4,000–12,000+ proxy configurations.
+
+The subscription is publicly available through a URL, and contains a mixture of proxy protocols.
+
+The primary objective is to identify the 5–10 configurations that provide the best REAL download speeds, not merely the lowest ping.
+
+The application must operate independently of Karing, while generating configurations that can be imported into Karing.
+
+The original subscription must never be modified.
+User's environment
+- Operating system: Windows 11.
+- VPN client: Karing.
+- Karing version: 1.2.25.2802.
+- Subscription: Public URL.
+- Subscription size: Variable, approximately 4,000–12,000 nodes.
+- Protocols: Mixed.
+- Most frequently useful protocol: VLESS, particularly VLESS REALITY.
+- Network environment: Iran, with severe internet restrictions, filtering, throttling and intermittent connectivity.
+- Number of currently usable nodes: Highly variable.
+- Sometimes approximately five nodes pass latency testing; sometimes approximately 100.
+The application must accommodate these variations automatically.
+2. Application architecture
+Use the following architecture:
+             SUBSCRIPTION URL
+                    |
+                    |
+              DOWNLOAD CONFIG
+                    |
+                    ▼
+              SUBSCRIPTION PARSER
+                    |
+                    ▼
+             NORMALIZE ALL NODES
+                    |
+                    ▼
+             PROXY CONNECTION TEST
+                    |
+                    ▼
+             LATENCY MEASUREMENT
+                    |
+                    ▼
+             FILTER CANDIDATES
+                    |
+                    ▼
+          ACTUAL DOWNLOAD SPEED TEST
+                    |
+                    ▼
+             RANK BY THROUGHPUT
+                    |
+                    ▼
+           REPEAT TEST TOP CANDIDATES
+                    |
+                    ▼
+             SELECT BEST 5–10
+                    |
+                    ▼
+            GENERATE Karing CONFIG
+                    |
+                    ▼
+              EXPORT AUTOMATICALLY
+
+The system must support automatic operation every two hours, with the interval configurable.
+3. Subscription handling
+The application must:
+1. Download the subscription directly from its URL.
+2. Handle changing subscription sizes.
+3. Support 4,000–12,000+ nodes without fixed-size assumptions.
+4. Decode Base64-encoded subscriptions.
+5. Parse newline-separated proxy share links.
+6. Support Clash YAML subscriptions.
+7. Support Xray JSON configurations where feasible.
+8. Identify duplicate nodes.
+9. Identify unsupported configurations.
+10. Preserve all original node information.
+Required protocols
+Support at least:
+Protocol	Priority
+VLESS	Critical
+VLESS REALITY	Critical
+VMess	High
+Trojan	High
+Shadowsocks	High
+Hysteria2	High
+TUIC	Medium
+SOCKS5	Medium
+HTTP proxy	Medium
+
+
+Transport support should include:
+- TCP
+- WebSocket
+- gRPC
+- HTTPUpgrade
+- XHTTP
+- TLS
+- REALITY
+- UDP transports where supported.
+Do not silently discard configurations with unsupported options.
+
+Report the number of successfully parsed and unsupported nodes.
+4. Proxy testing engine
+Use sing-box as the primary proxy engine.
+
+Official documentation:
+
+https://sing-box.sagernet.org/
+
+GitHub:
+
+https://github.com/SagerNet/sing-box
+
+The application should use sing-box to establish individual proxy connections and measure actual connectivity.
+
+Do not rely on simple TCP port checks as the primary availability test.
+
+Each node must be tested through its own proxy connection.
+Stage A: Connectivity
+For each node:
+- Attempt to establish the proxy connection.
+- Test DNS resolution through the proxy.
+- Attempt an HTTPS request through the proxy.
+- Measure connection establishment time.
+- Record connection failures and timeouts.
+Stage B: Latency
+Measure actual HTTP response latency through the proxy.
+
+Use a configurable HTTPS endpoint.
+
+Suggested endpoints to investigate:
+- https://www.cloudflare.com/cdn-cgi/trace
+- https://www.google.com/generate_204
+Do not assume either endpoint is accessible from Iran.
+
+Allow multiple configurable test endpoints.
+
+A failed endpoint must not automatically classify a node as dead.
+Stage C: Download speed
+This is the most important part.
+
+Ping is not sufficient.
+
+For each surviving candidate:
+1. Establish a connection through the proxy.
+2. Request a fixed-size download.
+3. Measure actual bytes received.
+4. Measure elapsed time.
+5. Calculate throughput in Mbps.
+6. Record connection failures.
+7. Record interrupted downloads.
+Formula:
+Mbps = (Downloaded bytes × 8) / elapsed seconds / 1,000,000
+
+Use sustained throughput rather than a single instantaneous measurement.
+
+Test candidates sequentially initially to avoid saturating the user's internet connection.
+5. Download testing parameters
+Initial settings:
+Parameter	Value
+Mode	Balanced
+Maximum candidates	100
+Download cap per candidate	192 KiB
+Test duration	8 seconds
+Concurrent tests	1
+Refresh interval	2 hours
+Final shortlist	5–10 nodes
+
+
+These are initial configuration values, not rigid limits.
+
+The application must adapt to the number of available candidates.
+
+For example:
+Nodes passing connectivity/latency	Nodes to speed-test
+5	5
+15	15
+50	50
+100	100
+300	100–150
+1,000	Select candidates using latency, stability and randomized sampling
+
+
+Important: Do not test 9,000 nodes by downloading files from each one. That would consume excessive bandwidth.
+
+Use a two-stage testing strategy.
+6. Candidate selection and ranking
+The system must not rank nodes exclusively by ping.
+
+Use these factors:
+1. Actual download throughput.
+2. Connection success rate.
+3. Response latency.
+4. Download stability.
+5. Recent test history.
+The ranking should prioritize download speed.
+
+A node with 250 ms latency and 8 Mbps throughput should rank above a node with 80 ms latency and 30 KB/s throughput.
+Important: avoid permanent exclusion
+In Iran, nodes frequently stop working and subsequently recover.
+
+Therefore:
+- Never permanently blacklist nodes merely because they failed one test.
+- Retest previously failed nodes during subsequent cycles.
+- Maintain a historical record.
+- Identify recurring failures.
+- Identify nodes that recover.
+- Detect sudden throughput degradation.
+The system should maintain three classifications:
+Status	Meaning
+Excellent	Good sustained throughput
+Degraded	Connects but delivers poor throughput
+Unavailable	Cannot establish a usable connection
+
+
+7. Test endpoint selection
+This is especially important.
+
+The application must support configurable download-test endpoints.
+
+A single test server can create misleading results if it is congested or inaccessible.
+
+Implement:
+- Multiple HTTPS download endpoints.
+- Configurable test-file sizes.
+- Endpoint health checking.
+- Endpoint rotation.
+- Comparison of results from multiple endpoints for shortlisted nodes.
+Potential endpoints to investigate:
+- Cloudflare speed test.
+- Hetzner public test files.
+- Other reliable HTTP/HTTPS download servers.
+The application must distinguish between:
+1. Proxy failure.
+2. Test-server failure.
+3. Local internet failure.
+4. Actual throughput limitation.
+Do not automatically classify a proxy as dead because one external test server is inaccessible.
+8. Karing integration
+Karing must remain the primary VPN client.
+
+Do not replace the original subscription.
+
+Instead, generate a separate configuration containing the best-performing nodes.
+
+Requirements:
+1. Generate a configuration compatible with Karing 1.2.25.2802.
+2. Include the original connection parameters of each selected node.
+3. Preserve UUIDs, passwords, TLS, REALITY, SNI, public keys, short IDs and transport settings.
+4. Include only the best 5–10 nodes.
+5. Generate a new configuration after every successful monitoring cycle.
+6. Save the configuration separately.
+7. Never overwrite the original subscription.
+Ideally, generate a sing-box-compatible configuration and validate it using the actual sing-box core.
+
+Investigate Karing's support for importing external configuration files.
+
+Official project:
+
+https://github.com/KaringX/karing
+
+Do not assume that every sing-box JSON configuration can be imported directly into Karing. Verify compatibility with the specified version.
+9. Windows application interface
+Build a simple GUI.
+
+Preferred technology:
+- Python 3.11 or newer.
+- Tkinter or PySide6.
+- sing-box executable.
+- SQLite for historical results.
+- Windows Task Scheduler or a background scheduler.
+Main dashboard
+Display:
+Metric	Value
+Last subscription update	Date/time
+Total nodes downloaded	9,000
+Successfully parsed	8,950
+Unsupported	50
+Successfully connected	120
+Speed-tested	100
+Best download speed	12.4 Mbps
+Next update	Date/time
+
+
+These values are illustrative.
+Results table
+Rank	Node	Protocol	Latency	Download	Status
+1	Germany 14	VLESS	180 ms	8.4 Mbps	Excellent
+2	Netherlands 22	VLESS	210 ms	5.7 Mbps	Excellent
+3	France 08	VMess	145 ms	0.03 Mbps	Degraded
+
+
+Allow sorting by:
+- Download speed.
+- Latency.
+- Protocol.
+- Stability.
+- Last successful test.
+Controls
+Include:
+- Start monitoring.
+- Stop monitoring.
+- Run one cycle.
+- Update subscription.
+- Test all candidates.
+- Export Karing configuration.
+- Open results folder.
+- Configure refresh interval.
+- Configure bandwidth budget.
+- Configure download-test endpoints.
+10. Automatic monitoring
+Default interval: Every two hours.
+
+At each cycle:
+1. Download the latest subscription.
+2. Parse all nodes.
+3. Normalize configurations.
+4. Test connectivity.
+5. Measure latency.
+6. Select candidates.
+7. Measure download speeds.
+8. Rank candidates.
+9. Retest the leading nodes.
+10. Generate the new Karing configuration.
+11. Save historical results.
+If the subscription URL becomes unavailable:
+- Retain the last successful subscription.
+- Retain the last valid shortlist.
+- Record the failure.
+- Retry later.
+Do not replace a valid configuration with an empty configuration after a failed subscription update.
+11. Historical monitoring
+Use SQLite.
+
+Store:
+- Node identifier.
+- Protocol.
+- Server address.
+- Port.
+- Last successful connection.
+- Last measured latency.
+- Last measured download speed.
+- Failure count.
+- Successful test count.
+- Historical average throughput.
+- Last tested timestamp.
+This is particularly useful in Iran because node performance can change dramatically throughout the day.
+
+The application should identify nodes that repeatedly provide good throughput rather than selecting a node based on one lucky measurement.
+12. Security and reliability
+Requirements:
+- Store subscription URLs locally.
+- Do not upload subscription data to external services.
+- Never expose UUIDs, passwords or credentials in logs.
+- Do not execute downloaded configuration files.
+- Validate generated configurations.
+- Terminate proxy processes after tests.
+- Avoid leaving thousands of background processes running.
+- Limit concurrent connections.
+- Support graceful shutdown.
+- Preserve the last working shortlist.
+13. Critical development requirements
+I want Gemini to pay particular attention to these issues.
+
+1. Do not confuse latency with throughput.
+
+A green ping is not proof of a working download connection.
+
+2. Do not use TCP-only filtering.
+
+Hysteria2 and TUIC can use UDP. TCP-only preliminary filtering can incorrectly reject usable nodes.
+
+3. Do not assume a fixed subscription size.
+
+The subscription changes between approximately 4,000 and 12,000 configurations.
+
+4. Do not assume a fixed number of working nodes.
+
+Sometimes five work; sometimes 100.
+
+5. Do not test all nodes with large downloads.
+
+Use staged filtering.
+
+6. Do not discard failed nodes permanently.
+
+They may recover.
+
+7. Do not produce an unvalidated Karing configuration.
+
+Test the generated configuration with the actual proxy core and verify its compatibility with Karing.
+
+8. Do not claim that the application is working merely because it successfully parses the subscription.
+
+Demonstrate actual successful proxy connections and real downloads.
+14. Expected deliverables
+I want a complete Windows application, not just a code sample.
+
+Deliver:
+1. Complete Python source code.
+2. Windows installation script.
+3. Windows launch script.
+4. Dependency installation.
+5. sing-box integration.
+6. Subscription parser.
+7. Actual proxy connectivity testing.
+8. Download-speed testing.
+9. SQLite historical database.
+10. GUI dashboard.
+11. Automatic two-hour refresh.
+12. Karing-compatible configuration exporter.
+13. Detailed installation instructions.
+14. A packaged ZIP containing everything.
+If possible, produce a standalone Windows executable.
+15. Development approach
+Do not attempt to write the entire application in one untested step.
+
+Build and validate it in phases.
+Phase	Deliverable
+1	Subscription downloader and parser
+2	Protocol normalization and sing-box integration
+3	Actual proxy connectivity and latency tests
+4	Download throughput measurement
+5	Ranking and historical database
+6	Karing configuration generation
+7	GUI
+8	Automatic scheduling
+9	Windows packaging and testing
+
+
+At every phase, provide a working version and test results.
+
+If a feature cannot be implemented reliably, explicitly explain why instead of providing a placeholder that pretends to work.
+My additional recommendations
+There are three things I would insist Gemini implements beyond the original specification.
+A. Adaptive testing
+Suppose only seven nodes pass the initial tests.
+
+Test all seven.
+
+Suppose 500 nodes pass.
+
+Do not blindly test only the first 100. Use a combination of latency, historical performance and randomized sampling so nodes later in the subscription aren't permanently disadvantaged.
+B. Two separate shortlists
+Maintain:
+- Fastest now: The best nodes in the latest test.
+- Most reliable: Nodes that have consistently performed well over several cycles.
+Sometimes the fastest node at 10 AM is unusable at 11 AM. Historical reliability is useful.
+C. Local network baseline
+Before testing proxies, measure the direct connection to the test endpoint.
+
+Otherwise, if your own internet connection is delivering 200 KB/s, you might incorrectly conclude that every proxy is slow.
+
+Record direct speed and compare proxy results against it.
+One final point about testing methodology
+The proposed 192 KiB download cap is useful for reducing bandwidth consumption, but it is not sufficient to reliably measure every fast connection.
+
+For example, a 192 KiB file may finish in a fraction of a second on a fast node. That makes the measurement sensitive to connection setup, TLS handshakes and transient network conditions.
+
+I would ask Gemini to implement two-stage throughput testing:
+- Preliminary test: Small transfer to eliminate obviously unusable nodes.
+- Confirmation test: Larger transfer over several seconds for the leading 10–15 candidates.
+Keep the overall bandwidth budget configurable.
+
+This is important for obtaining meaningful results without wasting your limited connectivity.
