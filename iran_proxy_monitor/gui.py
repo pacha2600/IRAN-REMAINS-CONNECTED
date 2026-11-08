@@ -67,6 +67,7 @@ class App:
         # can be wrapped by a native HWND, and iconbitmap alone does not reliably
         # update that wrapper's small and large icons on all Tk/Windows builds.
         self._windows_icon_handles=[]
+        self._icon_after_id=None
         asset_root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))
         self._icon_ico=asset_root/'assets'/'iran-remains-connected.ico'
         self._icon_png=asset_root/'assets'/'iran-remains-connected.png'
@@ -77,7 +78,7 @@ class App:
                 self.root.iconphoto(True,self.app_icon)
             if sys.platform=='win32' and self._icon_ico.is_file():
                 self.root.iconbitmap(default=str(self._icon_ico))
-                self.root.after(60,self._apply_windows_icon)
+                self._icon_after_id=self.root.after(60,self._apply_windows_icon)
         except (OSError,tk.TclError) as exc:
             event('application-icon-warning',error=type(exc).__name__)
         self.root.geometry('1380x900'); self.root.minsize(1020,680)
@@ -142,6 +143,7 @@ class App:
 
     def _apply_windows_icon(self):
         """Set both native Windows titlebar/taskbar icons, including Tk's wrapper HWND."""
+        self._icon_after_id=None
         if sys.platform!='win32' or not self._icon_ico.is_file():return
         try:
             import ctypes
@@ -230,10 +232,13 @@ class App:
         self.dashboard_canvas.pack(side='left',fill='both',expand=True)
         self.dashboard_scroll.configure(command=self.dashboard_canvas.yview)
         main=ttk.Frame(self.dashboard_canvas,padding=(11,7,11,5))
+        self.dashboard_main=main
         self.dashboard_window=self.dashboard_canvas.create_window((0,0),window=main,anchor='nw')
         self._dashboard_resize_pending=False
+        self._dashboard_fit_after_id=None
         self._dashboard_scroll_visible=True
         def fit_dashboard():
+            self._dashboard_fit_after_id=None
             self._dashboard_resize_pending=False
             try:
                 available=max(1,self.dashboard_canvas.winfo_height())
@@ -258,7 +263,7 @@ class App:
         def queue_fit(_event=None):
             if not self._dashboard_resize_pending:
                 self._dashboard_resize_pending=True
-                self.root.after_idle(fit_dashboard)
+                self._dashboard_fit_after_id=self.root.after_idle(fit_dashboard)
         main.bind('<Configure>',queue_fit)
         self.dashboard_canvas.bind('<Configure>',queue_fit)
         self._fit_dashboard=queue_fit
@@ -1693,6 +1698,13 @@ class App:
         self.sort_pending=False
         self.last_sort=time.monotonic()
     def close(self):
+        for attr in ('_icon_after_id','_dashboard_fit_after_id'):
+            after_id=getattr(self,attr,None)
+            if after_id is not None:
+                try:self.root.after_cancel(after_id)
+                except tk.TclError:pass
+                setattr(self,attr,None)
+        # Cancel the pending fitting callbacks before destroying Tcl widgets.
         self.monitor_enabled=False;self.schedule.disarm();self.cancel.set()
         self.connection._stop_requested.set()
         if self._populate_after_id is not None:

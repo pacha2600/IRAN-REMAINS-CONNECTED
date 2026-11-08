@@ -197,7 +197,13 @@ def _interrupt_read_on_cancel(response, cancel):
     def watch():
         while not finished.wait(0.25):
             if cancel.is_set():
+                # On Windows, shutdown() alone does not always interrupt a
+                # recv() already blocked in another thread. closesocket(),
+                # called by socket.close(), also aborts pending socket I/O.
+                # The response is being cancelled, so it must not be reused.
                 try: sock.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                try: sock.close()
                 except OSError: pass
                 return
 
