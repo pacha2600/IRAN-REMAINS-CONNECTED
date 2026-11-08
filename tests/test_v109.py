@@ -75,6 +75,43 @@ class Release109Tests(unittest.TestCase):
                 SlowFeedHandler.keep_open.set()
                 server.shutdown();server.server_close()
 
+    def test_cancel_polling_does_not_depend_on_cross_thread_socket_close(self):
+        """Windows recv may ignore shutdown/close from the watcher thread."""
+        stop=threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            SlowFeedHandler.got_request.clear()
+            SlowFeedHandler.keep_open.clear()
+            server=ThreadingHTTPServer(('127.0.0.1',0),SlowFeedHandler)
+            threading.Thread(target=server.serve_forever,daemon=True).start()
+            result=[]
+            try:
+                with patch.object(monitor,'DATA_DIR',Path(directory)), \
+                     patch.object(monitor,'_interrupt_read_on_cancel',
+                                  side_effect=lambda response, cancel: threading.Event()):
+                    def run():
+                        try:
+                            monitor._fetch_remote_resume(
+                                f'http://127.0.0.1:{server.server_port}/feed',
+                                timeout=120, attempts=2, proxy_mode='direct', cancel=stop)
+                        except Exception as exc:
+                            result.append(exc)
+                    worker=threading.Thread(target=run,daemon=True)
+                    worker.start()
+                    self.assertTrue(SlowFeedHandler.got_request.wait(3))
+                    time.sleep(.2)
+                    stop.set()
+                    worker.join(3)
+                    self.assertFalse(worker.is_alive(),
+                                     'Stop must work even without Windows socket shutdown')
+                    self.assertEqual(len(result),1)
+                    self.assertIsInstance(result[0], monitor.OperationCancelled)
+                    saved=Path(directory)/'subscription-download.part'
+                    self.assertTrue(saved.exists(), 'The partially received feed is checkpointed')
+                    self.assertGreater(saved.stat().st_size,0)
+            finally:
+                SlowFeedHandler.keep_open.set()
+                server.shutdown();server.server_close()
+
     def test_lock_owner_can_be_cancelled_from_another_instance(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(monitor,'DATA_DIR',Path(directory)), \

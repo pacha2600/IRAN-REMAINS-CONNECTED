@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import random
 import re
+import select
 import socket
 import uuid
 from urllib.error import URLError, HTTPError
@@ -211,6 +212,35 @@ def _interrupt_read_on_cancel(response, cancel):
     return finished
 
 
+def _wait_for_feed_body(sock, cancel, deadline):
+    """Wait for the next body chunk without entering a long blocking recv.
+
+    On Windows, closing a socket in a different thread does NOT reliably wake
+    an already blocked urllib read.  After draining the first response chunk,
+    poll readability with Winsock select(), checking Stop every 250 ms.  SSL
+    may already have decrypted bytes in its private buffer; pending() handles
+    that case without waiting for new network packets.
+    """
+    if sock is None:
+        return
+    while True:
+        _check_cancel(cancel)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Subscription body stalled')
+        try:
+            if getattr(sock, 'pending', lambda: 0)() > 0:
+                return
+            readable, _, _ = select.select([sock], [], [], min(.25, remaining))
+        except (OSError, ValueError, TypeError):
+            _check_cancel(cancel)
+            # Unsupported socket wrappers continue via urllib's ordinary read.
+            return
+        if readable:
+            _check_cancel(cancel)
+            return
+
+
 def _fetch_remote_resume(source: str, timeout=300, proxy_mode='system', attempts=5,
                          on_progress=None, cancel=None, proxy_host='', proxy_port=0,
                          proxy_username='', proxy_password='', keyed_partial=False, request_agent=None):
@@ -352,13 +382,23 @@ def _fetch_remote_resume(source: str, timeout=300, proxy_mode='system', attempts
                     if expected is not None and expected > MAX_SUBSCRIPTION_BYTES:
                         raise ValueError('Subscription exceeds 25 MB')
 
+                    # The first read drains any body bytes urllib buffered
+                    # while parsing the HTTP headers. Subsequent reads use a
+                    # cancellable readiness poll so Windows does not get stuck
+                    # in recv() even when socket.shutdown()/close() cannot wake it.
+                    body_chunks = 0
+                    last_body_byte_at = time.monotonic()
                     while len(received) <= MAX_SUBSCRIPTION_BYTES:
                         _check_cancel(cancel)
+                        if body_chunks and sock is not None:
+                            _wait_for_feed_body(sock, cancel, last_body_byte_at + timeout)
                         reader = getattr(response, 'read1', None) or response.read
                         block = reader(min(32 * 1024, MAX_SUBSCRIPTION_BYTES + 1 - len(received)))
                         _check_cancel(cancel)
                         if not block:
                             break
+                        body_chunks += 1
+                        last_body_byte_at = time.monotonic()
                         received.extend(block)
                         if len(received) % (128 * 1024) < len(block):
                             checkpoint()
