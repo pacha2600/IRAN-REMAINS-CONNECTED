@@ -11,13 +11,61 @@ $archive = Join-Path $env:TEMP "iran-proxy-monitor-$version-amd64.zip"
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 # Never trust a previously copied executable: verify the official archive hash
 # on EVERY build, then freshly extract the core into the release directory.
-$url = "https://github.com/SagerNet/sing-box/releases/download/v$version/sing-box-$version-windows-amd64.zip"
-if (-not (Test-Path $archive)) {
-  Invoke-WebRequest -Uri $url -OutFile $archive -UseBasicParsing
+# Download a pinned release. GitHub release-asset endpoints can return 504 from
+# GitHub-hosted runners; SourceForge is an independently hosted project mirror.
+# Never install *anything* from either endpoint unless SHA256 matches the
+# independently pinned official release hash above.
+function Test-PinnedArchive([string]$candidate, [string]$expected) {
+  if (-not (Test-Path -LiteralPath $candidate)) { return $false }
+  try {
+    $actual = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+    return $actual -eq $expected
+  } catch { return $false }
 }
-$hash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-if ($hash -ne $expectedSha256) {
-  Remove-Item $archive -Force
+
+$assetName = "sing-box-$version-windows-amd64.zip"
+$downloadUrls = @(
+  "https://github.com/SagerNet/sing-box/releases/download/v$version/$assetName",
+  "https://sourceforge.net/projects/sing-box.mirror/files/v$version/$assetName/download",
+  "https://downloads.sourceforge.net/project/sing-box.mirror/v$version/$assetName"
+)
+if (Test-PinnedArchive $archive $expectedSha256) {
+  Write-Host 'Using SHA256-verified cached official sing-box archive.'
+} else {
+  if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+  $downloaded = $false
+  foreach ($sourceUrl in $downloadUrls) {
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+      # Use a new temporary file for each attempt: never accept truncated or
+      # accidentally concatenated downloads from failed attempts.
+      $temporary = "$archive.downloading"
+      if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+      try {
+        $origin = ([uri]$sourceUrl).Host
+        Write-Host "sing-box download: host=$origin attempt=$attempt/2"
+        Invoke-WebRequest -Uri $sourceUrl -OutFile $temporary -UseBasicParsing -TimeoutSec 150 -MaximumRedirection 10
+        if (-not (Test-PinnedArchive $temporary $expectedSha256)) {
+          throw "Downloaded sing-box archive failed pinned SHA256 verification (host=$origin)."
+        }
+        Move-Item -LiteralPath $temporary -Destination $archive -Force
+        $downloaded = $true
+        Write-Host "Verified sing-box v$version SHA256 from $origin"
+        break
+      } catch {
+        # No unverified artifact survives a failed attempt.
+        Write-Warning "sing-box download failed or hash mismatched (host=$origin, attempt=$attempt): $($_.Exception.Message)"
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        if ($attempt -lt 2) { Start-Sleep -Seconds 3 }
+      }
+    }
+    if ($downloaded) { break }
+  }
+  if (-not $downloaded) {
+    throw 'Cannot retrieve SHA256-verified sing-box 1.14.4 from official GitHub or its mirror. Build halted; no unverified binary will be bundled.'
+  }
+}
+# Re-verify immediately before extraction, including on cached downloads.
+if (-not (Test-PinnedArchive $archive $expectedSha256)) {
   throw 'Official sing-box archive SHA256 mismatch. Aborting release build.'
 }
 $extract = Join-Path $env:TEMP 'iran-proxy-monitor-core-build'
@@ -51,7 +99,22 @@ foreach ($file in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'SOURCE_AND_COMPLIANCE.
 $outputDir = Join-Path $root 'release-output'
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 $sourceZip = Join-Path $outputDir "sing-box-v$version-source.zip"
-Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/archive/refs/tags/v$version.zip" -OutFile $sourceZip -UseBasicParsing
+# codeload is independent of GitHub release-asset delivery.
+$sourceUrls = @(
+  "https://codeload.github.com/SagerNet/sing-box/zip/refs/tags/v$version",
+  "https://github.com/SagerNet/sing-box/archive/refs/tags/v$version.zip"
+)
+$sourceFetched = $false
+foreach ($sourceUrl in $sourceUrls) {
+  try {
+    if (Test-Path $sourceZip) { Remove-Item $sourceZip -Force }
+    Invoke-WebRequest -Uri $sourceUrl -OutFile $sourceZip -UseBasicParsing -TimeoutSec 150
+    if ((Get-Item $sourceZip).Length -lt 1024) { throw 'Source archive too small.' }
+    $sourceFetched = $true
+    break
+  } catch { Write-Warning "sing-box source retrieval failed: $($_.Exception.Message)" }
+}
+if (-not $sourceFetched) { throw 'Could not download matching sing-box source archive.' }
 Add-Type -AssemblyName System.IO.Compression
 $sourceArchive = [System.IO.Compression.ZipFile]::OpenRead($sourceZip)
 try {
