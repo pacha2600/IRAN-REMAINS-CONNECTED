@@ -34,6 +34,10 @@ jobs:
         run: |
           if (-not (Test-Path "dist/IranRemainsConnected/IranRemainsConnected.exe")) { throw "Bundled GUI exe missing" }
           if (-not (Test-Path "dist/IranRemainsConnected/bin/sing-box.exe")) { throw "Bundled sing-box core missing" }
+          foreach ($required in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'SOURCE_AND_COMPLIANCE.md', 'LICENSE-sing-box.txt', 'LICENSE-PyYAML.txt')) {
+            if (-not (Test-Path "dist/IranRemainsConnected/licenses/$required")) { throw "Missing license notice: $required" }
+          }
+          if (-not (Test-Path "release-output/sing-box-v1.14.4-source.zip")) { throw "sing-box corresponding source archive missing" }
           $installer = Get-ChildItem "release-output/" -Filter "IranRemainsConnected-Setup-v1.1-win64.exe" | Select-Object -First 1
           if (-not $installer) { throw "Expected v1.1 Setup.exe missing" }
           $checksum = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -45,6 +49,9 @@ jobs:
           path: |
             release-output/*.exe
             release-output/SHA256SUMS.txt
+            release-output/sing-box-v1.14.4-source.zip
+            release-output/THIRD_PARTY_NOTICES.md
+            release-output/SOURCE_AND_COMPLIANCE.md
           if-no-files-found: error
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -53,4 +60,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Get-ChildItem release-output\*.exe | Select-Object -First 1
-          gh release create $env:GITHUB_REF_NAME $installer.FullName release-output/SHA256SUMS.txt --title "IRAN REMAINS CONNECTED $env:GITHUB_REF_NAME" --generate-notes --verify-tag
+          gh release create $env:GITHUB_REF_NAME $installer.FullName release-output/SHA256SUMS.txt release-output/sing-box-v1.14.4-source.zip release-output/THIRD_PARTY_NOTICES.md release-output/SOURCE_AND_COMPLIANCE.md --title "IRAN REMAINS CONNECTED $env:GITHUB_REF_NAME" --generate-notes --verify-tag

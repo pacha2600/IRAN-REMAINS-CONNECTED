@@ -42,6 +42,25 @@ $licenseDir = Join-Path $dist 'licenses'
 New-Item -ItemType Directory -Path $licenseDir -Force | Out-Null
 Copy-Item (Join-Path $root 'iran_proxy_monitor\_vendor\PyYAML-LICENSE.txt') (Join-Path $licenseDir 'LICENSE-PyYAML.txt') -Force
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/SagerNet/sing-box/v$version/LICENSE" -OutFile (Join-Path $licenseDir 'LICENSE-sing-box.txt') -UseBasicParsing
+# Ship our own GPL terms and third-party/source notices alongside upstream notices.
+foreach ($file in @('LICENSE', 'THIRD_PARTY_NOTICES.md', 'SOURCE_AND_COMPLIANCE.md')) {
+  Copy-Item (Join-Path $root $file) (Join-Path $licenseDir $file) -Force
+}
+# Keep corresponding sing-box source together with the binary release.
+# Obtained from the exact official tag; binary itself is hash-verified above.
+$outputDir = Join-Path $root 'release-output'
+New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+$sourceZip = Join-Path $outputDir "sing-box-v$version-source.zip"
+Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/archive/refs/tags/v$version.zip" -OutFile $sourceZip -UseBasicParsing
+Add-Type -AssemblyName System.IO.Compression
+$sourceArchive = [System.IO.Compression.ZipFile]::OpenRead($sourceZip)
+try {
+  $entryNames = @($sourceArchive.Entries | ForEach-Object { $_.FullName })
+  if (-not ($entryNames | Where-Object { $_ -match '/LICENSE$' })) { throw 'sing-box source archive lacks LICENSE' }
+  if (-not ($entryNames | Where-Object { $_ -match '/go.mod$' })) { throw 'sing-box source archive lacks go.mod' }
+} finally { $sourceArchive.Dispose() }
+Copy-Item (Join-Path $root 'THIRD_PARTY_NOTICES.md') (Join-Path $outputDir 'THIRD_PARTY_NOTICES.md') -Force
+Copy-Item (Join-Path $root 'SOURCE_AND_COMPLIANCE.md') (Join-Path $outputDir 'SOURCE_AND_COMPLIANCE.md') -Force
 $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
 if (-not (Test-Path $iscc)) { $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe' }
 if (-not (Test-Path $iscc)) { throw 'Install Inno Setup 6 on your build computer, or run GitHub Actions.' }
