@@ -68,6 +68,8 @@ class App:
         # update that wrapper's small and large icons on all Tk/Windows builds.
         self._windows_icon_handles=[]
         self._icon_after_id=None
+        self._icon_retry_count=0
+        self._icon_map_binding=None
         asset_root=Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent.parent))
         self._icon_ico=asset_root/'assets'/'iran-remains-connected.ico'
         self._icon_png=asset_root/'assets'/'iran-remains-connected.png'
@@ -78,7 +80,10 @@ class App:
                 self.root.iconphoto(True,self.app_icon)
             if sys.platform=='win32' and self._icon_ico.is_file():
                 self.root.iconbitmap(default=str(self._icon_ico))
-                self._icon_after_id=self.root.after(60,self._apply_windows_icon)
+                # Windows/Tk can create its decorated top-level HWND *after*
+                # Tk startup; <Map> retries when the real taskbar window exists.
+                self._icon_map_binding=self.root.bind('<Map>',self._on_icon_map,add='+')
+                self._icon_after_id=self.root.after(100,self._apply_windows_icon)
         except (OSError,tk.TclError) as exc:
             event('application-icon-warning',error=type(exc).__name__)
         self.root.geometry('1380x900'); self.root.minsize(1020,680)
@@ -141,38 +146,37 @@ class App:
             self.status.set(f'An operation in process {owner["pid"]} may still be running. Stop requests cancellation; new tests must wait.')
         self._poll_after_id=self.root.after(100,self.poll)
 
+    def _on_icon_map(self,_event=None):
+        """Reapply after Windows creates/maps the decorated top-level HWND."""
+        if self._icon_after_id is None and self._icon_retry_count < 4:
+            try:self._icon_after_id=self.root.after(100,self._apply_windows_icon)
+            except tk.TclError:pass
+
     def _apply_windows_icon(self):
-        """Set both native Windows titlebar/taskbar icons, including Tk's wrapper HWND."""
+        """Apply real .ico resources to Tk's decorated HWND and Windows class.
+
+        iconphoto/iconbitmap alone do not reliably update the Windows 11
+        taskbar icon in a frozen Tkinter GUI. Locate the topmost ancestor,
+        because winfo_id can refer to an undecorated Tk child window.
+        """
         self._icon_after_id=None
-        if sys.platform!='win32' or not self._icon_ico.is_file():return
+        if sys.platform!='win32':return
+        if not self._icon_ico.is_file():
+            event('application-icon-warning',error='BundledIconMissing')
+            return
         try:
-            import ctypes
-            from ctypes import wintypes
-            user32=ctypes.windll.user32
-            # LOADIMAGEW: IMAGE_ICON=1; LR_LOADFROMFILE=0x10. Explicit
-            # bitmaps prevent the default pythonw/console icon from winning.
-            user32.LoadImageW.restype=wintypes.HANDLE
-            user32.LoadImageW.argtypes=[wintypes.HINSTANCE,wintypes.LPCWSTR,
-                                         wintypes.UINT,wintypes.INT,wintypes.INT,wintypes.UINT]
-            user32.GetParent.restype=wintypes.HWND
-            user32.GetParent.argtypes=[wintypes.HWND]
-            user32.SendMessageW.restype=ctypes.c_ssize_t
-            user32.SendMessageW.argtypes=[wintypes.HWND,wintypes.UINT,
-                                           ctypes.c_size_t,ctypes.c_ssize_t]
-            hwnd=int(self.root.winfo_id())
-            wrapper=int(user32.GetParent(hwnd) or hwnd)
-            path=str(self._icon_ico)
-            # Set Tcl default first; the native small and large icons are final.
-            self.root.iconbitmap(default=path)
-            for size,selector in ((16,0),(32,1)):
-                handle=user32.LoadImageW(None,path,1,size,size,0x10)
-                if not handle:
-                    event('application-icon-warning',error='WindowsLoadImageFailed')
-                    continue
-                self._windows_icon_handles.append(handle)
-                for window in (wrapper,hwnd):
-                    user32.SendMessageW(window,0x0080,selector,handle) # WM_SETICON
-            # Keep the loaded handles alive while the window is open.
+            from .windows_icon import apply_windows_icon
+            result=apply_windows_icon(int(self.root.winfo_id()),str(self._icon_ico))
+            # Retain the HICON objects for the lifetime of the process:
+            # WM_SETICON and class icon properties borrow, not own, them.
+            self._windows_icon_handles.extend(result['handles'])
+            if not result['applied']:
+                event('application-icon-warning',error='NativeIconNotApplied')
+            if self._icon_retry_count == 0:
+                event('application-icon-applied',windows=result['windows'],handles=len(result['handles']))
+            self._icon_retry_count+=1
+            if self._icon_retry_count < 3:
+                self._icon_after_id=self.root.after(700,self._apply_windows_icon)
         except (OSError,AttributeError,ValueError,tk.TclError) as exc:
             event('application-icon-warning',error=type(exc).__name__)
 
@@ -1698,6 +1702,10 @@ class App:
         self.sort_pending=False
         self.last_sort=time.monotonic()
     def close(self):
+        if self._icon_map_binding:
+            try:self.root.unbind('<Map>',self._icon_map_binding)
+            except tk.TclError:pass
+            self._icon_map_binding=None
         for attr in ('_icon_after_id','_dashboard_fit_after_id'):
             after_id=getattr(self,attr,None)
             if after_id is not None:
